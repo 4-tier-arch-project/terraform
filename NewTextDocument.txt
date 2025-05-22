@@ -1,0 +1,143 @@
+# Modular Terraform setup for EKS on AWS (Dev Environment)
+# Structure:
+#   terraform/
+#     main.tf
+#     providers.tf
+#     backend.tf
+#     variables.tf
+#     outputs.tf
+#     modules/
+#       vpc/
+#       eks/
+#       ecr/
+
+# terraform/main.tf
+module "vpc" {
+  source = "./modules/vpc"
+}
+
+module "eks" {
+  source          = "./modules/eks"
+  vpc_id          = module.vpc.vpc_id
+  private_subnets = module.vpc.private_subnets
+  public_subnets  = module.vpc.public_subnets
+  cluster_name    = "dev-eks"
+}
+
+module "ecr" {
+  source = "./modules/ecr"
+  repo_names = ["app-repo"]
+}
+
+# terraform/providers.tf
+provider "aws" {
+  region = var.aws_region
+}
+
+# terraform/backend.tf
+terraform {
+  backend "s3" {
+    bucket = "your-tf-state-bucket"
+    key    = "eks/dev/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+# terraform/variables.tf
+variable "aws_region" {
+  default = "us-east-1"
+}
+
+# terraform/outputs.tf
+output "cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "kubeconfig" {
+  value = module.eks.kubeconfig
+}
+
+# modules/vpc/main.tf
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.1.0"
+
+  name = "dev-vpc"
+  cidr = "10.0.0.0/16"
+
+  azs             = ["us-east-1a", "us-east-1b"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+}
+
+# modules/vpc/outputs.tf
+output "vpc_id" {
+  value = module.vpc.vpc_id
+}
+
+output "private_subnets" {
+  value = module.vpc.private_subnets
+}
+
+output "public_subnets" {
+  value = module.vpc.public_subnets
+}
+
+# modules/eks/main.tf
+module "eks" {
+  source          = "terraform-aws-modules/eks/aws"
+  version         = "20.8.4"
+
+  cluster_name    = var.cluster_name
+  cluster_version = "1.29"
+  subnet_ids      = var.private_subnets
+  vpc_id          = var.vpc_id
+
+  eks_managed_node_groups = {
+    default = {
+      instance_types = ["t2.medium"]
+      desired_size   = 2
+      min_size       = 1
+      max_size       = 3
+    }
+  }
+}
+
+# modules/eks/variables.tf
+variable "cluster_name" {}
+variable "private_subnets" {}
+variable "public_subnets" {}
+variable "vpc_id" {}
+
+# modules/eks/outputs.tf
+output "cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "kubeconfig" {
+  value = module.eks.kubeconfig
+}
+
+# modules/ecr/main.tf
+resource "aws_ecr_repository" "repos" {
+  for_each = toset(var.repo_names)
+
+  name = each.key
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+# modules/ecr/variables.tf
+variable "repo_names" {
+  type = list(string)
+}
+
+# modules/ecr/outputs.tf
+output "ecr_repo_urls" {
+  value = { for r in aws_ecr_repository.repos : r.name => r.repository_url }
+}
